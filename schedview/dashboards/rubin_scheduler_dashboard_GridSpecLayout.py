@@ -72,8 +72,11 @@ Further potential modifications
     3. [product polish]  Populate with useful messages sent to debugger?
     4. [product polish]  Bokeh key degree symbol
                            - convert all Text objects to Label objects to use LaTeX.
-    5. [code style]      Change all parameter lists to have their closing bracket on a new line.
-
+    5. [code style]      [maybe] Change all parameter lists to have their closing bracket on a new line?
+    6. [clean code]      Test out using a watcher for sky_map()
+                            - self.param.watch(fn, parameter_names, what='value', onlychanged=True, queued=False, precedence=0)
+    7. [clean code]      Check out param.Path() https://param.holoviz.org/user_guide/Parameter_Types.html#paths
+    
 
 Current issues/quirks
 ---------------------
@@ -138,7 +141,10 @@ LOGO      = "/assets/lsst_white_logo.png"
 
 pn.extension("tabulator",
              # css_files   = [pn.io.resources.CSS_URLS["font-awesome"]],
-             sizing_mode = "stretch_width",)
+             sizing_mode = "stretch_width",
+             notifications=True)
+
+pn.state.notifications.position = 'top-right'
 
 logging.basicConfig(format = "%(asctime)s %(message)s",
                     level  = logging.INFO)
@@ -185,6 +191,7 @@ class Scheduler(param.Parameterized):
     
     scheduler_fname = param.String(default="",
                                    label="Scheduler pickle file")
+    # scheduler_fname = param.Path(default='scheduler.p', search_paths=['/'])  # https://param.holoviz.org/user_guide/Parameter_Types.html#paths
     date            = param.Date(Time.now().datetime.date())
     tier            = param.ObjectSelector(default="", objects=[""])
     survey          = param.Integer(default=0)
@@ -256,7 +263,7 @@ class Scheduler(param.Parameterized):
 
     # Panel for basis function table title.
     @param.depends("_data_loaded", "survey")
-    def basis_function_table_title(self):  
+    def basis_function_table_title(self):
         title_string = 'Basis functions'
         if self._data_loaded==True and self._scheduler is not None:
             title_string += ' for survey {}'.format(self._tier_survey_rewards.reset_index()['survey'][self.survey])
@@ -301,11 +308,14 @@ class Scheduler(param.Parameterized):
     def _update_scheduler(self):
         logging.info("Updating scheduler.")
         try:
+            pn.state.notifications.info('Loading scheduler from pickle file ...', duration=5000)
             (scheduler, conditions) = schedview.collect.scheduler_pickle.read_scheduler(self.scheduler_fname)            
             self.param.update(_data_loaded = True,
                               _scheduler = scheduler,
                               _conditions = conditions)
         except:
+            pn.state.notifications.clear()
+            pn.state.notifications.error('Could not load scheduler.', duration=0)
             logging.error(f"Could not load scheduler from {self.scheduler_fname} \n{traceback.format_exc(limit=-1)}")
             self._debugging_message = f"Could not load scheduler from {self.scheduler_fname}: \n{traceback.format_exc(limit=-1)}"
             
@@ -341,10 +351,12 @@ class Scheduler(param.Parameterized):
     @param.depends("_conditions", "_date_time", watch=True)
     def _update_survey_rewards(self):
         if self._scheduler is None:
+            pn.state.notifications.error('Survey rewards data unable to be updated as no scheduler is loaded.', duration=3000)
             logging.info("Can not update survey reward table as no pickle is loaded.")
             return
         # Code to remove one of two exceptions on initial load BUT breaks other things.
         # if self._date_time is None:
+              # pn.state.notifications.error('Survey rewards data unable to be updated as no date selected.', duration=0)
         #     logging.info("Can not update survey reward table as no date chosen.")
         #     return
         try:
@@ -361,6 +373,7 @@ class Scheduler(param.Parameterized):
             self.param.update(_survey_rewards = survey_rewards,
                               _data_loaded    = True)
         except:           
+            pn.state.notifications.error('Survey rewards data unable to be updated. Perhaps date not in range?', duration=0)
             logging.info(f"Survey rewards dataframe unable to be updated: \n{traceback.format_exc(limit=-1)}")
             self._debugging_message = f"Survey rewards dataframe unable to be updated: \n{traceback.format_exc(limit=-1)}"
             self._map_params_cache = [True, 0, 0, 0, 0, 0, 16, "Viridis256"]
@@ -575,7 +588,7 @@ class Scheduler(param.Parameterized):
 
 
     # Monitors whether a new sky_map should be created
-    @param.depends("_survey_maps","_plot_display","survey_map","basis_function","nside","color_palette", watch=True)
+    @param.depends("_survey_maps","_plot_display","survey_map","basis_function","color_palette", watch=True)
     def _update_sky_map(self):
         logging.info("Checking if need to create a new sky map.")
         # If no conditions or survey_maps set, trigger sky_map() to return a message.
@@ -871,6 +884,9 @@ def scheduler_app(date=None, scheduler_pickle=None):
     
     if scheduler_pickle is not None:
         scheduler.scheduler_fname = scheduler_pickle
+        
+    # How to change this dynamically?
+    page_height = 100
     
     sched_app = pn.GridSpec(sizing_mode='stretch_both', max_height=1000).servable()
     
@@ -919,11 +935,11 @@ def scheduler_app(date=None, scheduler_pickle=None):
     sched_app[66:87, 67:87] = pn.Column(pn.Spacer(height=32),
                                         pn.pane.Bokeh(generate_key()))
     # Map display parameters (map, nside, color palette).
-    sched_app[66:87, 87:100] = pn.Param(scheduler,
+    sched_app[66:87, 87:page_height] = pn.Param(scheduler,
                                         parameters=["survey_map","nside","color_palette"],
                                         show_name=False)
     # Debugging collapsable card.
-    sched_app[87:100, :]     = pn.Card(pn.Column(scheduler.debugging_messages,
+    sched_app[87:page_height, :]     = pn.Card(pn.Column(scheduler.debugging_messages,
                                                  styles={'background':'#EDEDED'}),
                                        title='Debugging',
                                        header_background='white',
