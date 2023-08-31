@@ -26,37 +26,18 @@ import schedview.compute.survey
 import schedview.collect.scheduler_pickle
 import schedview.plot.survey
 
+# For the conditions.mjd bugfix. (TEMPORARY)
+# from rubin_sim.scheduler.model_observatory import ModelObservatory
+# model_observatory = ModelObservatory()
 
 """
-Notes
------
-    
-    - Syntax, naming conventions, formatting, etc., mostly follows Eric's
-      prenight.py.
-
 
 Still to implement
 ------------------
+        
+    Load big pickle:
     
-    Loading indicator/floating error message:
-    
-        1. Loading indicator when new pickle/datetime chosen.
-            - https://panel.holoviz.org/reference/global/Notifications.html
-            - pn.extension(notifications=True)
-              pn.state.notifications.info('Pickle file loading.', duration=0)
-        2. Floating error message appear when bad/invalid pickle or invalid date.
-            - The pop-up should be triggered by watching the error messages
-              that are sent to debugging and checking for errors of interest.
-            - Which errors should cause a pop-up?
-                - "Invalid pickle - perhaps try another?"
-                - "Can't access the pickle - are you sure you have the right file?"
-                - "Invalid date - perhaps date out of range for this pickle?"
-                - ...
-    
-    Load big pickle/URL pickle:
-    
-        1. Check if able to load pickle from a URL.
-        2. Check how dashboard handles large pickle (many surveys).
+        1. Check how dashboard handles large pickle (many surveys).
     
     URL:
         
@@ -73,20 +54,15 @@ Further potential modifications
     4. [product polish]  Bokeh key degree symbol
                            - convert all Text objects to Label objects to use LaTeX.
     5. [code style]      Change all parameter lists to have their closing bracket on a new line.
+    6. [clean code]      Test out using a watcher for sky_map()
+                            - self.param.watch(fn, parameter_names, what='value', onlychanged=True, queued=False, precedence=0)
+    7. [clean code]      Check out param.Path() https://param.holoviz.org/user_guide/Parameter_Types.html#paths
+    8. [feature]         Have debugging pane pop out to larger size (dynamic sizing).
+    9. [dynamic]         Query plot objects for key items.
 
 
 Current issues/quirks
 ---------------------
-
-    Blank map:
-        
-        - SolarElongationMask (tier 4 surveys) shows blank map even though
-          healpix array is not all -inf values (25%=1).
-          - Perhaps something to do with basis_area=0?
-        - Blank map also means no tooltip.
-        - I currently send a message to debugging noting that basis_area=0.
-          Is this behaviour okay? (Blank map, no tooltip, messsage).
-        - Should we treat such a case differently?
     
     Deserialisation error:
         
@@ -104,29 +80,17 @@ Current issues/quirks
           the survey_map drop-down selector should change to reflect this?
         - When a scalar basis function is selected, perhaps we should show a
           blank selection?
-    
-    Basis function table:
-        
-        - The column headers make the table wider than can fit in space.
-        - Can we remove the sorting arrows to reduce width of each column?
-        - Javascript: {title:"Name", field:"name", sorter:"string", headerSort:false} 
 
 
 Pending questions
 -----------------
-    
-    - Can we remove sorting arrows in basis_function table headers to reduce
-      column widths?
-    - Do they still want a colour scale for the plot or is the tooltip info
-      enough?
-    - How about the latest debugging collapsable card? Can we keep it?
+
     - What kinds of messages should be shown in debugging panel?
         - Only errors/unsuccessful updates?
         - "Updating ...", "Successfully updated.", "Could not update ..."
     - Do they want to distinguish between -inf (infesible) vs -nan (feasible)
           - using different colours, i.e. two different greys?
     - Should scalar maps that return finite values be a colour or is grey okay?
-    - Is the moon coloured orange instead of the sun? (check out MoonAvoidance)
     
 
 """
@@ -134,7 +98,6 @@ Pending questions
 color_palettes = [s for s in bokeh.palettes.__palettes__ if "256" in s]
 
 LOGO      = "/assets/lsst_white_logo.png"
-#key_image = "/assets/key_image.png"                                            # Not needed if using Bokeh key.
 
 pn.extension("tabulator",
              # css_files   = [pn.io.resources.CSS_URLS["font-awesome"]],
@@ -186,12 +149,13 @@ class Scheduler(param.Parameterized):
     
     scheduler_fname = param.String(default="",
                                    label="Scheduler pickle file")
+    # scheduler_fname = param.Path(default='scheduler.p', search_paths=['/'])
     date            = param.Date(Time.now().datetime.date())
     tier            = param.ObjectSelector(default="", objects=[""])
     survey          = param.Integer(default=0)
     basis_function  = param.Integer(default=-1)
     survey_map      = param.ObjectSelector(default="", objects=[""])
-    nside           = param.ObjectSelector(default=16,
+    nside           = param.ObjectSelector(default=32,
                                            objects=[2**n for n in np.arange(1, 6)],
                                            label="Map resolution (nside)")
     color_palette   = param.ObjectSelector(default="Viridis256",
@@ -214,19 +178,26 @@ class Scheduler(param.Parameterized):
     _basis_function_df_widget = param.Parameter(None)
     _debugging_message        = param.Parameter(None)
     
-    # Parameters to ensure map only updates once.
-    _map_params_cache = param.List(default=[True, 0, 0, 0, 0, 0, 16, "Viridis256"])
-    _make_a_new_map   = param.Parameter(None)
-
     # To indicate that data is being loaded
     is_loading = False
+    
+    
+    # Parameters to ensure map only updates once.
+    # _map_params_cache = param.List(default=[0, 0, 0, 0, 0, 16, "Viridis256"])
+    _map_params_cache = param.List(default=[0, -1, 16, 0, -1, 0, "Viridis256"])
+    #_make_a_new_map   = param.Parameter(None)
+    _update_map   = param.Parameter(None)
+    _create_new_map = param.Parameter(None)
+
+    _base_sky_map = param.Parameter(None)
+    _map_number = param.Integer(default=0)
     
     # Dashboard headings ------------------------------------------------------# Should these functions be below others?
 
     
     # Panel for dashboard title.
-    @param.depends("tier", "survey", "_plot_display", "survey_map", "basis_function")
-    def dashboard_title(self):
+    #@param.depends("tier", "survey", "_plot_display", "survey_map", "basis_function")
+    def generate_dashboard_title(self):
         titleTS  = ''; titleBF = ''; titleM = ''
         if self._scheduler is not None and self.tier != '':
             titleTS = f'\nTier {self.tier[-1]} - Survey {self.survey}'
@@ -235,13 +206,18 @@ class Scheduler(param.Parameterized):
             elif self._plot_display == 2 and self.basis_function >= 0:
                 titleBF = ' - Basis function {}'.format(self.basis_function)
         title_string = titleTS + titleBF + titleM
-        dashboard_title = pn.pane.Str(title_string,
-                                      height=20,
-                                      styles={'font-size':'14pt',
-                                              'font-weight':'300',
-                                              'color':'white'},
-                                      stylesheets=[title_stylesheet])
-        return dashboard_title
+        
+        return title_string
+    
+    @param.depends("tier", "survey", "_plot_display", "survey_map", "basis_function")
+    def dashboard_title(self):
+        title_string = self.generate_dashboard_title()
+        return pn.pane.Str(title_string,
+                            height=20,
+                            styles={'font-size':'14pt',
+                                    'font-weight':'300',
+                                    'color':'white'},
+                            stylesheets=[title_stylesheet])
 
 
     # Panel for survey rewards table title.
@@ -316,7 +292,8 @@ class Scheduler(param.Parameterized):
             self._debugging_message = f"Could not load scheduler from {self.scheduler_fname}: \n{traceback.format_exc(limit=-1)}"
             pn.state.notifications.error(f"Could not load scheduler from {self.scheduler_fname}", 0)
             
-            self._map_params_cache = [True, 0, 0, 0, 0, 0, 16, "Viridis256"]
+            #self._map_params_cache = [0, 0, 0, 0, 0, 16, "Viridis256"]
+            self._map_params_cache = [0, 0, 16, 0, 0, 0, "Viridis256"]
             self._data_loaded = False
             self._scheduler = None
             self._conditions = None
@@ -326,16 +303,6 @@ class Scheduler(param.Parameterized):
             self.basis_function = -1
         finally:
             self.is_loading = False
-            
-            # self.param.update(_data_loaded= False,
-            #                   _scheduler = None,
-            #                   _conditions = None,
-            #                   _survey_rewards = None,
-            #                   survey = -1,
-            #                   )
-            # self.param.update(basis_function = -1,
-            #                   tier = "",
-            #                   )
             
     
     # Update datetime if new datetime chosen.
@@ -360,7 +327,12 @@ class Scheduler(param.Parameterized):
         try:
             logging.info("Updating survey rewards.")
             self.is_loading = True
+            
+            # TEMPORARY BUG-FIX.
             self._conditions.mjd = self._date_time
+            # self._conditions.__dict__.clear()
+            # self._conditions.__dict__.update(model_observatory.return_conditions().__dict__)
+            
             self._scheduler.update_conditions(self._conditions)
             self._rewards  = self._scheduler.make_reward_df(self._conditions)
             survey_rewards = schedview.compute.scheduler.make_scheduler_summary_df(self._scheduler,
@@ -376,7 +348,8 @@ class Scheduler(param.Parameterized):
             logging.info(f"Survey rewards dataframe unable to be updated: \n{traceback.format_exc(limit=-1)}")
             pn.state.notifications.error("Survey rewards dataframe unable to be updated!", 0)
             self._debugging_message = f"Survey rewards dataframe unable to be updated: \n{traceback.format_exc(limit=-1)}"
-            self._map_params_cache = [True, 0, 0, 0, 0, 0, 16, "Viridis256"]
+            #self._map_params_cache = [0, 0, 0, 0, 0, 16, "Viridis256"]
+            self._map_params_cache = [0, 0, 16, 0, 0, 0, "Viridis256"]
             self.param.update(_data_loaded     = False,
                               _survey_rewards  = None,
                               _basis_functions = None)
@@ -577,8 +550,8 @@ class Scheduler(param.Parameterized):
             'max_basis_reward': 'Max Reward',
             'basis_area': 'Area',
             'basis_weight': 'Weight',
-            'max_accum_reward': 'Max Accumelated Reward',
-            'accum_area': 'Accumelated Area'
+            'max_accum_reward': 'Max Accumulated Reward',
+            'accum_area': 'Accumulated Area'
         }
         basis_function_table = pn.widgets.Tabulator(self._basis_functions[columnns],
                                                     titles=titles,
@@ -611,43 +584,85 @@ class Scheduler(param.Parameterized):
             pn.state.notifications.error("Basis function table selection unable to be updated", 0)
             self.basis_function = -1
 
+# -----------------------------------------------------------------------------
+#                           DEVELOPMENT ZONE
+# -----------------------------------------------------------------------------
 
-    # Monitors whether a new sky_map should be created
-    @param.depends("_survey_maps","_plot_display","survey_map","basis_function","nside","color_palette", watch=True)
+    # Monitors whether a new sky_map should be created or the current sky_map updated
+    @param.depends("_survey_maps","_plot_display","survey_map","basis_function","color_palette", watch=True)
     def _update_sky_map(self):
-        logging.info("Checking if need to create a new sky map.")
+        logging.info("Checking if need to update sky map.")
+        
         # If no conditions or survey_maps set, trigger sky_map() to return a message.
         if self._conditions is None or self._survey_maps is None:
-            self.param.trigger("_make_a_new_map")
+            self.param.trigger("_update_map")
             return
+        
         # Create list of parameters to compare against those in map cache.
-        new_params = [(self._survey_maps is None),
-                      self.tier,
+        new_params = [self.tier,
                       self.survey,
+                      self.nside,
                       self._plot_display,
                       self.basis_function,
                       self.survey_map,
-                      self.nside,
                       self.color_palette]
+        
+        # If survey or nside has changed, reset sky_map base.
+        if (new_params[1]!=self._map_params_cache[1]) or (new_params[2]!=self._map_params_cache[2]):
+            
+            # Make a dummy map that is 1.0 for all healpixels that might have data.
+            self._survey_maps['above_horizon'] = np.where(self._conditions.alt > 0, 1.0, np.nan)
+            
+            # Make the map figure for the new survey data.
+            self._base_sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
+                                                                          self._survey_maps,
+                                                                          'above_horizon',
+                                                                          self.nside)
+            # Remove 'above_horizon' from tooltip.
+            self._base_sky_map.plot.toolbar.tools[-1].tooltips.remove(('above_horizon', '@above_horizon'))
+        
         # If params are different to those in cache, trigger sky_map().
         if new_params != self._map_params_cache:
-            logging.info("Yes, create a new sky map.")
-            self.param.trigger("_make_a_new_map")
+            logging.info("Yes, update sky map.")
+            logging.info(f"{new_params}")
+            self.param.trigger("_update_map")
         else:
-            logging.info("No, don't need to create a new sky map.")
-
+            logging.info("No, don't need to update sky map.")
     
-    # Create sky_map of survey for display.
-    @param.depends("_make_a_new_map")
+    
+    # Create sky_map for display.
+    @param.depends("_update_map")
     def sky_map(self):
         if self._data_loaded is False or self._conditions is None:
             return "No scheduler loaded."
         if self._survey_maps is None:
             return "No surveys are loaded."
-        logging.info("Creating sky map.")
+        logging.info("Updating sky map.")
         try:            
             logging.info(f"(_plot_display, basis_function, survey_map): ({self._plot_display}, {self.basis_function}, {self.survey_map})")
             self._debugging_message = f"(_plot_display, basis_function, survey_map): ({self._plot_display}, {self.basis_function}, {self.survey_map})"
+            
+            # Update figure to show a different map by modifying the existing bokeh objects and pushing update.
+            hpix_renderer = self._base_sky_map.plot.select(name="hpix_renderer")[0]
+            hpix_data_source = self._base_sky_map.plot.select(name="hpix_ds")[0]
+            
+            map_case = 0
+            if self._basis_functions is not None:
+                bf = self._basis_functions['basis_func'][self.basis_function]
+            else:
+                bf = 'NONE'
+            
+            if self._plot_display==1 and np.isnan(self._survey_maps[self.survey_map]).all():
+                map_case = 1 # all nan reward from survey_maps
+            elif self._plot_display==1:
+                map_case = 2 # sky brightness maps and basis functions in survey_maps from survey_maps (how to split into two?)
+            elif self.basis_function!=-1 and self._plot_display==2 and any(bf in key for key in self._survey_maps.keys()):
+                map_case = 3 # basis functions in survey_maps from basis function table
+            elif self.basis_function!=-1 and self._plot_display==2:
+                map_case = 4 # basis functions not in survey_maps
+            
+            logging.info(f"----- map_case: {map_case}")
+            
             
             # -----------------------------------------------------------------
             # Load survey map.
@@ -660,7 +675,7 @@ class Scheduler(param.Parameterized):
                     self._debugging_message = "CASE 1"
                     
                     # Set colormap as Greyscale with -1 as middle color (grey).
-                    cmap = bokeh.transform.linear_cmap("value","Greys256",-2,0)
+                    # cmap = bokeh.transform.linear_cmap("value","Greys256",-2,0)
                     
                     # Create array populated with scalar values where sky brightness map is not NaN.
                     scalar_array = self._survey_maps['u_sky'].copy()
@@ -670,11 +685,18 @@ class Scheduler(param.Parameterized):
                     self._survey_maps[self.survey_map] = scalar_array
                     
                     # Generate uniform map with tooltip as in non-scalar case.
-                    sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
-                                                                       self._survey_maps,
-                                                                       self.survey_map,
-                                                                       self.nside,
-                                                                       cmap=cmap)
+                    # sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
+                    #                                                    self._survey_maps,
+                    #                                                    self.survey_map,
+                    #                                                    self.nside,
+                    #                                                    cmap=cmap)
+                    
+                    hpix_renderer.glyph.fill_color = bokeh.transform.linear_cmap(self.survey_map,"Greys256",-2,0)
+                    hpix_renderer.glyph.line_color = hpix_renderer.glyph.fill_color
+                    
+                    # Update map.
+                    self._base_sky_map.update()
+                    
                 # -------------------------------------------------------------
                 # CASE 2: If survey map is not all NaNs.
                 else:
@@ -690,17 +712,23 @@ class Scheduler(param.Parameterized):
                     
                     # If all values equal, set colormap to greyscale.
                     if min_good_value == max_good_value:
-                        cmap = bokeh.transform.linear_cmap("value","Greys256",min_good_value-1,max_good_value+1)
+                        hpix_renderer.glyph.fill_color = bokeh.transform.linear_cmap(self.survey_map,
+                                                                                     "Greys256",
+                                                                                     min_good_value-1,
+                                                                                     max_good_value+1)
+                        
                     # If all values are not equal, set colormap with selected color_palette.
                     else:
-                        cmap = bokeh.transform.linear_cmap("value",self.color_palette,min_good_value,max_good_value)
+                        hpix_renderer.glyph.fill_color = bokeh.transform.linear_cmap(self.survey_map,
+                                                                                     self.color_palette,
+                                                                                     min_good_value,
+                                                                                     max_good_value)
                     
-                    # Generate map.
-                    sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
-                                                                       self._survey_maps,
-                                                                       self.survey_map,
-                                                                       self.nside,
-                                                                       cmap=cmap)
+                    hpix_renderer.glyph.line_color = hpix_renderer.glyph.fill_color
+                    
+                    # Update map.
+                    self._base_sky_map.update()
+                    
             # -----------------------------------------------------------------
             # Load a basis function map.
             elif self.basis_function!=-1 and self._plot_display==2:
@@ -723,28 +751,43 @@ class Scheduler(param.Parameterized):
                     self._debugging_message = "CASE 3"
                     
                     # Get key name.
-                    bf_key = list(key for key in self._survey_maps.keys() if bf in key)[0]
+                    # bf_key = list(key for key in self._survey_maps.keys() if bf in key)[0]
+                    
+                    
+                    bf = self._basis_functions['basis_func'][self.basis_function]
+                    bf_underscored = bf.replace(" ", "_")
+                    bf_survey_key = list(key for key in self._survey_maps.keys() if bf in key)[0]
+                    bf_bokeh_key = list(key for key in hpix_data_source.data.keys() if bf_underscored in key)[0]
                     
                     # Get range of values.
-                    min_good_value = np.nanmin(self._survey_maps[bf_key])
-                    max_good_value = np.nanmax(self._survey_maps[bf_key])
+                    min_good_value = np.nanmin(self._survey_maps[bf_survey_key])
+                    max_good_value = np.nanmax(self._survey_maps[bf_survey_key])
                     
                     logging.info(f"(min,max): ({min_good_value},{max_good_value})")
                     self._debugging_message = f"(min,max): ({min_good_value},{max_good_value})"
                     
                     # If all values equal, set colormap to greyscale.
                     if min_good_value == max_good_value:
-                        cmap = bokeh.transform.linear_cmap("value","Greys256",min_good_value-1,max_good_value+1)
+                        # cmap = bokeh.transform.linear_cmap("value","Greys256",min_good_value-1,max_good_value+1)
+                        hpix_renderer.glyph.fill_color = bokeh.transform.linear_cmap(bf_bokeh_key,
+                                                                                     "Greys256",
+                                                                                     min_good_value-1,
+                                                                                     max_good_value+1)
+                        
+                        
                     # If all values are not equal, set colormap with selected color_palette.
                     else:
-                        cmap = bokeh.transform.linear_cmap("value",self.color_palette,min_good_value,max_good_value)
-                        
-                    # Generate map.
-                    sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
-                                                                       self._survey_maps,
-                                                                       bf_key,
-                                                                       self.nside,
-                                                                       cmap=cmap)
+                        # cmap = bokeh.transform.linear_cmap("value",self.color_palette,min_good_value,max_good_value)
+                        hpix_renderer.glyph.fill_color = bokeh.transform.linear_cmap(bf_bokeh_key,
+                                                                                     self.color_palette,
+                                                                                     min_good_value,
+                                                                                     max_good_value)
+                    
+                    hpix_renderer.glyph.line_color = hpix_renderer.glyph.fill_color
+                    
+                    # Update map.
+                    self._base_sky_map.update()
+                    
                 # -------------------------------------------------------------
                 # CASE 4: If basis function is NOT in list of survey maps
                 # (i.e. it is scalar and hasn't yet been selected and added to
@@ -755,8 +798,12 @@ class Scheduler(param.Parameterized):
                     self._debugging_message = "CASE 4"
                     
                     try:
+                        
+                        bf = self._basis_functions['basis_func'][self.basis_function]
+                        bf_underscored = bf.replace(" ", "_")
+                        
                         # Create array populated with scalar values where sky brightness map is not NaN.
-                        scalar_array = self._survey_maps['u_sky'].copy()
+                        scalar_array = hpix_data_source.data['u_sky'].copy() 
                         
                         # Get max_basis_reward.
                         max_basis_reward = self._basis_functions.loc[self.basis_function,:]['max_basis_reward']
@@ -772,10 +819,17 @@ class Scheduler(param.Parameterized):
                             self._debugging_message = "finite"
                             
                             # Create array populated with scalar values where sky brightness map is not NaN.
-                            scalar_array[~np.isnan(self._survey_maps['u_sky'])] = self._basis_functions.loc[self.basis_function,:]['max_basis_reward']
+                            scalar_array[~np.isnan(hpix_data_source.data['u_sky'])] = self._basis_functions.loc[self.basis_function,:]['max_basis_reward']
                             
-                            # Set colormap as Greyscale with value as middle color.
-                            cmap = bokeh.transform.linear_cmap("value","Greys256",max_basis_reward-1,max_basis_reward+1)
+                            hpix_data_source.data[bf_underscored] = scalar_array
+                            hpix_renderer.glyph.fill_color = bokeh.transform.linear_cmap(bf_underscored,
+                                                                                         self.color_palette,
+                                                                                         #"Greys256",
+                                                                                         max_basis_reward-1,
+                                                                                         max_basis_reward+1)
+                            at_bf = f"@{bf_underscored}"
+                            self._base_sky_map.plot.toolbar.tools[-1].tooltips.append((bf, at_bf))
+
                             
                         # If max_basis_reward is -inf.
                         else:
@@ -786,17 +840,31 @@ class Scheduler(param.Parameterized):
                             # Create array populated with -1 where sky brightness map is not NaN.
                             scalar_array[~np.isnan(self._survey_maps['u_sky'])] = -1
                             
+                            # Add new key-pair (basis_function: scalar array) to survey_maps dictionary.
+                            self._survey_maps[self._basis_functions['basis_func'][self.basis_function]] = scalar_array
+                            
+                            hpix_renderer.glyph.fill_color = bokeh.transform.linear_cmap(self._basis_functions['basis_func'][self.basis_function],
+                                                                                         "Greys256",-2,0)
+                            
                             # Set colormap as Greyscale with -1 as middle color (grey).
-                            cmap = bokeh.transform.linear_cmap("value","Greys256",-2,0) # plot black?
+                            # cmap = bokeh.transform.linear_cmap("value","Greys256",-2,0) # plot black?
                         
                         # Add new key-pair (basis_function: scalar array) to survey_maps dictionary.
-                        self._survey_maps[self._basis_functions['basis_func'][self.basis_function]] = scalar_array
+                        # self._survey_maps[self._basis_functions['basis_func'][self.basis_function]] = scalar_array
                         
                         # Generate uniform map with tooltip as in non-scalar case.
-                        sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
-                                                                           self._survey_maps,
-                                                                           self._basis_functions['basis_func'][self.basis_function],
-                                                                           self.nside)
+                        # sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
+                        #                                                    self._survey_maps,
+                        #                                                    self._basis_functions['basis_func'][self.basis_function],
+                        #                                                    self.nside)
+                        
+                    
+                        hpix_renderer.glyph.line_color = hpix_renderer.glyph.fill_color
+                    
+                        # Update map.
+                        self._base_sky_map.update()
+                    
+                    
             # -----------------------------------------------------------------
                         
                     except:
@@ -804,23 +872,238 @@ class Scheduler(param.Parameterized):
                         logging.info(f"Could not load map of scalar basis function: \n{traceback.format_exc(limit=-1)}")
                         pn.state.notifications.error("Could not load map of scalar basis function!", 0)
                         return "Basis function is a scalar."
-            sky_map_figure = sky_map.figure
+                    
+                    
+            # sky_map_figure = sky_map.figure
+            sky_map_figure = self._base_sky_map.figure
+            
             # Add map parameters to cache.
-            self._map_params_cache = [(self._survey_maps is None),
-                                      self.tier,
+            self._map_params_cache = [self.tier,
                                       self.survey,
+                                      self.nside,
                                       self._plot_display,
                                       self.basis_function,
                                       self.survey_map,
-                                      self.nside,
                                       self.color_palette]
-            logging.info("Sky map successfully created.")
+            logging.info("Sky map successfully updated.")
         except:
             self._debugging_message = f"Could not load map: \n{traceback.format_exc(limit=-1)}"
             logging.info(f"Could not load map: \n{traceback.format_exc(limit=-1)}")
             pn.state.notifications.error("Could not load map!", 0)
             return "No map loaded."
         return sky_map_figure
+
+# -----------------------------------------------------------------------------
+#                           DEVELOPMENT ZONE
+# -----------------------------------------------------------------------------
+
+    # # Monitors whether a new sky_map should be created
+    # @param.depends("_survey_maps","_plot_display","survey_map","basis_function","color_palette", watch=True)
+    # def _update_sky_map(self):
+    #     logging.info("Checking if need to create a new sky map.")
+    #     # If no conditions or survey_maps set, trigger sky_map() to return a message.
+    #     if self._conditions is None or self._survey_maps is None:
+    #         self.param.trigger("_make_a_new_map")
+    #         return
+    #     # Create list of parameters to compare against those in map cache.
+    #     new_params = [self.tier,
+    #                   self.survey,
+    #                   self._plot_display,
+    #                   self.basis_function,
+    #                   self.survey_map,
+    #                   self.nside,
+    #                   self.color_palette]
+    #     # If params are different to those in cache, trigger sky_map().
+    #     if new_params != self._map_params_cache:
+    #         logging.info("Yes, create a new sky map.")
+    #         self.param.trigger("_make_a_new_map")
+    #     else:
+    #         logging.info("No, don't need to create a new sky map.")
+
+    
+    # # Create sky_map of survey for display.
+    # @param.depends("_make_a_new_map")
+    # def sky_map(self):
+    #     if self._data_loaded is False or self._conditions is None:
+    #         return "No scheduler loaded."
+    #     if self._survey_maps is None:
+    #         return "No surveys are loaded."
+    #     logging.info("Creating sky map.")
+    #     try:            
+    #         logging.info(f"(_plot_display, basis_function, survey_map): ({self._plot_display}, {self.basis_function}, {self.survey_map})")
+    #         self._debugging_message = f"(_plot_display, basis_function, survey_map): ({self._plot_display}, {self.basis_function}, {self.survey_map})"
+            
+    #         # -----------------------------------------------------------------
+    #         # Load survey map.
+    #         if self._plot_display==1:
+    #             # -------------------------------------------------------------
+    #             # CASE 1: If survey map is all NaNs (i.e. 'reward').
+    #             if np.isnan(self._survey_maps[self.survey_map]).all():
+                    
+    #                 logging.info("CASE 1")
+    #                 self._debugging_message = "CASE 1"
+                    
+    #                 # Set colormap as Greyscale with -1 as middle color (grey).
+    #                 cmap = bokeh.transform.linear_cmap("value","Greys256",-2,0)
+                    
+    #                 # Create array populated with scalar values where sky brightness map is not NaN.
+    #                 scalar_array = self._survey_maps['u_sky'].copy()
+    #                 scalar_array[~np.isnan(self._survey_maps['u_sky'])] = -1
+                    
+    #                 # Replace key-pair (map: scalar array) to survey_maps dictionary.
+    #                 self._survey_maps[self.survey_map] = scalar_array
+                    
+    #                 # Generate uniform map with tooltip as in non-scalar case.
+    #                 sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
+    #                                                                    self._survey_maps,
+    #                                                                    self.survey_map,
+    #                                                                    self.nside,
+    #                                                                    cmap=cmap)
+    #             # -------------------------------------------------------------
+    #             # CASE 2: If survey map is not all NaNs.
+    #             else:
+    #                 logging.info("CASE 2")
+    #                 self._debugging_message = "CASE 2"
+                    
+    #                 # Get range of values.
+    #                 min_good_value = np.nanmin(self._survey_maps[self.survey_map])
+    #                 max_good_value = np.nanmax(self._survey_maps[self.survey_map])
+                    
+    #                 logging.info(f"(min,max): ({min_good_value},{max_good_value})")
+    #                 self._debugging_message = f"(min,max): ({min_good_value},{max_good_value})"
+                    
+    #                 # If all values equal, set colormap to greyscale.
+    #                 if min_good_value == max_good_value:
+    #                     cmap = bokeh.transform.linear_cmap("value","Greys256",min_good_value-1,max_good_value+1)
+    #                 # If all values are not equal, set colormap with selected color_palette.
+    #                 else:
+    #                     cmap = bokeh.transform.linear_cmap("value",self.color_palette,min_good_value,max_good_value)
+                    
+    #                 # Generate map.
+    #                 sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
+    #                                                                    self._survey_maps,
+    #                                                                    self.survey_map,
+    #                                                                    self.nside,
+    #                                                                    cmap=cmap)
+    #         # -----------------------------------------------------------------
+    #         # Load a basis function map.
+    #         elif self.basis_function!=-1 and self._plot_display==2:
+                
+    #             # Get name of basis function.
+    #             bf = self._basis_functions['basis_func'][self.basis_function]
+                
+    #             # If area=0, show message in debugging (map *might* be blank).
+    #             if self._basis_functions.loc[self.basis_function, :]['basis_area'] == 0:
+    #                 logging.info(f"Basis function {bf} has area 0: plot is empty.")
+    #                 self._debugging_message = f"Basis function {bf} has area 0."
+                
+    #             # -------------------------------------------------------------
+    #             # CASE 3: If basis function IS in the list of survey maps.
+    #             # (i.e. it is not scalar OR it is scalar, but has already been
+    #             # selected and added to survey maps).
+    #             if any(bf in key for key in self._survey_maps.keys()):
+                    
+    #                 logging.info("CASE 3")
+    #                 self._debugging_message = "CASE 3"
+                    
+    #                 # Get key name.
+    #                 bf_key = list(key for key in self._survey_maps.keys() if bf in key)[0]
+                    
+    #                 # Get range of values.
+    #                 min_good_value = np.nanmin(self._survey_maps[bf_key])
+    #                 max_good_value = np.nanmax(self._survey_maps[bf_key])
+                    
+    #                 logging.info(f"(min,max): ({min_good_value},{max_good_value})")
+    #                 self._debugging_message = f"(min,max): ({min_good_value},{max_good_value})"
+                    
+    #                 # If all values equal, set colormap to greyscale.
+    #                 if min_good_value == max_good_value:
+    #                     cmap = bokeh.transform.linear_cmap("value","Greys256",min_good_value-1,max_good_value+1)
+    #                 # If all values are not equal, set colormap with selected color_palette.
+    #                 else:
+    #                     cmap = bokeh.transform.linear_cmap("value",self.color_palette,min_good_value,max_good_value)
+                        
+    #                 # Generate map.
+    #                 sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
+    #                                                                    self._survey_maps,
+    #                                                                    bf_key,
+    #                                                                    self.nside,
+    #                                                                    cmap=cmap)
+    #             # -------------------------------------------------------------
+    #             # CASE 4: If basis function is NOT in list of survey maps
+    #             # (i.e. it is scalar and hasn't yet been selected and added to
+    #             # survey maps).
+    #             else:
+                    
+    #                 logging.info("CASE 4")
+    #                 self._debugging_message = "CASE 4"
+                    
+    #                 try:
+    #                     # Create array populated with scalar values where sky brightness map is not NaN.
+    #                     scalar_array = self._survey_maps['u_sky'].copy()
+                        
+    #                     # Get max_basis_reward.
+    #                     max_basis_reward = self._basis_functions.loc[self.basis_function,:]['max_basis_reward']
+                        
+    #                     logging.info(f"max_basis_reward = {max_basis_reward}")
+    #                     self._debugging_message = f"max_basis_reward = {max_basis_reward}"
+                        
+    #                     # If max_basis_reward is finite.
+    #                     #if max_basis_reward != -np.nan and max_basis_reward != -np.inf:
+    #                     if max_basis_reward != -np.inf:
+                            
+    #                         logging.info("finite")
+    #                         self._debugging_message = "finite"
+                            
+    #                         # Create array populated with scalar values where sky brightness map is not NaN.
+    #                         scalar_array[~np.isnan(self._survey_maps['u_sky'])] = self._basis_functions.loc[self.basis_function,:]['max_basis_reward']
+                            
+    #                         # Set colormap as Greyscale with value as middle color.
+    #                         cmap = bokeh.transform.linear_cmap("value","Greys256",max_basis_reward-1,max_basis_reward+1)
+                            
+    #                     # If max_basis_reward is -inf.
+    #                     else:
+                            
+    #                         logging.info("-inf")
+    #                         self._debugging_message = "-inf"
+                            
+    #                         # Create array populated with -1 where sky brightness map is not NaN.
+    #                         scalar_array[~np.isnan(self._survey_maps['u_sky'])] = -1
+                            
+    #                         # Set colormap as Greyscale with -1 as middle color (grey).
+    #                         cmap = bokeh.transform.linear_cmap("value","Greys256",-2,0) # plot black?
+                        
+    #                     # Add new key-pair (basis_function: scalar array) to survey_maps dictionary.
+    #                     self._survey_maps[self._basis_functions['basis_func'][self.basis_function]] = scalar_array
+                        
+    #                     # Generate uniform map with tooltip as in non-scalar case.
+    #                     sky_map = schedview.plot.survey.map_survey_healpix(self._conditions.mjd,
+    #                                                                        self._survey_maps,
+    #                                                                        self._basis_functions['basis_func'][self.basis_function],
+    #                                                                        self.nside)
+    #         # -----------------------------------------------------------------
+                        
+    #                 except:
+    #                     self._debugging_message = f"Could not load map of scalar basis function: \n{traceback.format_exc(limit=-1)}"
+    #                     logging.info(f"Could not load map of scalar basis function: \n{traceback.format_exc(limit=-1)}")
+    #                     pn.state.notifications.error("Could not load map of scalar basis function!", 0)
+    #                     return "Basis function is a scalar."
+    #         sky_map_figure = sky_map.figure
+    #         # Add map parameters to cache.
+    #         self._map_params_cache = [self.tier,
+    #                                   self.survey,
+    #                                   self._plot_display,
+    #                                   self.basis_function,
+    #                                   self.survey_map,
+    #                                   self.nside,
+    #                                   self.color_palette]
+    #         logging.info("Sky map successfully created.")
+    #     except:
+    #         self._debugging_message = f"Could not load map: \n{traceback.format_exc(limit=-1)}"
+    #         logging.info(f"Could not load map: \n{traceback.format_exc(limit=-1)}")
+    #         pn.state.notifications.error("Could not load map!", 0)
+    #         return "No map loaded."
+    #     return sky_map_figure
     
 
     # Panel for debugging messages.
@@ -845,40 +1128,44 @@ class Scheduler(param.Parameterized):
     @param.depends('is_loading', watch=True)
     def update_loading(self):
         sched_app.loading = self.is_loading
+
 # -----------------------------------------------------------------------------
+
+def generate_array_for_key(number_of_columns=4):
+    
+    return {
+        # x,y coordinates for glyphs (lines, circles and text).
+        "x_title"   : np.array([7]),    # Title x coord
+        "y_title"   : np.array([5.75]), # Title y coord
+        "x_circles" : np.tile(8,number_of_columns),     # Circle centre coords
+        "x_text_1"  : np.tile(2.5,number_of_columns),   # Text in colunn 1
+        "x_text_2"  : np.tile(8.75,number_of_columns),  # Text in column 2
+        "x0_lines"  : np.tile(0.75,number_of_columns),  # Start lines
+        "x1_lines"  : np.tile(2,number_of_columns),     # End lines
+        "y" : np.arange(number_of_columns,0,-1),        # y coords for all items except title
+
+        # Colours and sizes of images.
+        "line_colours"   : np.array(['black','red','#1f8f20','#110cff']),
+        "circle_colours" : np.array(['#ffa500','grey','red','#1f8f20']),
+        "circle_sizes"   : np.tile(10,number_of_columns),
+        
+        # Text for title and key items.
+        "title_text" : np.array(['Key']),
+        "text_1"     : np.array(['Horizon','ZD=70 degrees','Ecliptic','Galactic plane']),                 # Column 1
+        "text_2"     : np.array(['Sun position','Moon position','Survey field(s)','Telescope pointing']), # Column 2
+        }
 
 # Generates the key as a Bokeh plot.
 def generate_key():
     
-    # Number of key items in each column.
-    N = 4
-
-    # x,y coordinates for glyphs (lines, circles and text).
-    x_title   = np.array([7])    # Title x coord
-    y_title   = np.array([5.75]) # Title y coord
-    x_circles = np.tile(8,N)     # Circle centre coords
-    x_text_1  = np.tile(2.5,N)   # Text in colunn 1
-    x_text_2  = np.tile(8.75,N)  # Text in column 2
-    x0_lines  = np.tile(0.75,N)  # Start lines
-    x1_lines  = np.tile(2,N)     # End lines
-    y = np.arange(N,0,-1)        # y coords for all items except title
-
-    # Colours and sizes of images.
-    line_colours   = np.array(['black','red','#1f8f20','#110cff'])
-    circle_colours = np.array(['#ffa500','grey','red','#1f8f20'])
-    circle_sizes   = np.tile(10,N)
-    
-    # Text for title and key items.
-    title_text = np.array(['Key'])
-    text_1     = np.array(['Horizon','ZD=70 degrees','Ecliptic','Galactic plane'])                 # Column 1
-    text_2     = np.array(['Sun position','Moon position','Survey field(s)','Telescope pointing']) # Column 2
+    data_array = generate_array_for_key()
     
     # Assign above data to relevant data source (to be used in glyph creation below).
-    title_source  = bokeh.models.ColumnDataSource(dict(x=x_title, y=y_title, text=title_text))
-    text1_source  = bokeh.models.ColumnDataSource(dict(x=x_text_1, y=y, text=text_1))
-    text2_source  = bokeh.models.ColumnDataSource(dict(x=x_text_2, y=y, text=text_2))
-    circle_source = bokeh.models.ColumnDataSource(dict(x=x_circles, y=y, sizes=circle_sizes, colours=circle_colours))
-    line_source   = bokeh.models.ColumnDataSource(dict(x0=x0_lines, y0=y, x1=x1_lines,y1=y, colours=line_colours))
+    title_source  = bokeh.models.ColumnDataSource(dict(x=data_array["x_title"], y=data_array["y_title"], text=data_array["title_text"]))
+    text1_source  = bokeh.models.ColumnDataSource(dict(x=data_array["x_text_1"], y=data_array["y"], text=data_array["text_1"]))
+    text2_source  = bokeh.models.ColumnDataSource(dict(x=data_array["x_text_2"], y=data_array["y"], text=data_array["text_2"]))
+    circle_source = bokeh.models.ColumnDataSource(dict(x=data_array["x_circles"], y=data_array["y"], sizes=data_array["circle_sizes"], colours=data_array["circle_colours"]))
+    line_source   = bokeh.models.ColumnDataSource(dict(x0=data_array["x0_lines"], y0=data_array["y"], x1=data_array["x1_lines"],y1=data_array["y"], colours=data_array["line_colours"]))
 
     # Create glyphs.
     border_glyph = bokeh.models.Rect(x=7, y=3.25, width=14, height=6.5, line_color="#048b8c", fill_color=None, line_width=3)
@@ -904,8 +1191,9 @@ def generate_key():
     return plot
 
 # -----------------------------------------------------------------------------
-# Moved app pane outside scheduler app so that it's accessible from Scheduler class
+# Moved app pane outside scheduler_app so that it's accessible from Scheduler class.
 sched_app = pn.GridSpec(sizing_mode='stretch_both', max_height=1000).servable()
+
 
 def scheduler_app(date=None, scheduler_pickle=None):
     
