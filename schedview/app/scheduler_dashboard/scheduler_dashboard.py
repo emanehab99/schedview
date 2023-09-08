@@ -88,8 +88,7 @@ def url_formatter(dataframe_row, name_column, url_column):
     """
     if dataframe_row[url_column] == '':
         return dataframe_row[name_column]
-    else:
-        return f'<a href="{dataframe_row[url_column]}" target="_blank"> {dataframe_row[name_column]}</a>'
+    return f'<a href="{dataframe_row[url_column]}" target="_blank"> {dataframe_row[name_column]}</a>'
 
 
 class Scheduler(param.Parameterized):
@@ -409,7 +408,7 @@ class Scheduler(param.Parameterized):
 
     # ------------------------------------------------------------------------------------- Internal workings
 
-    def clear_dashboard(self):
+    def _clear_dashboard(self):
         """Clear the dashboard for a new pickle or a new date."""
         self._debugging_message = "Starting to clear dashboard."
 
@@ -435,7 +434,7 @@ class Scheduler(param.Parameterized):
 
         self._debugging_message = "Finished clearing dashboard."
 
-    def read_scheduler(self):
+    def _read_scheduler(self):
         """Load the scheduler and conditions objects from pickle file.
 
         Returns
@@ -468,7 +467,7 @@ class Scheduler(param.Parameterized):
 
             return False
 
-    def make_scheduler_summary_df(self):
+    def _make_scheduler_summary_df(self):
         """Update conditions, and make the reward and scheduler summary dataframes.
 
         Returns
@@ -536,7 +535,7 @@ class Scheduler(param.Parameterized):
 
             return False
 
-    def create_summary_widget(self):
+    def _create_summary_widget(self):
         """Create Tabulator widget with scheduler summary dataframe."""
         if self._scheduler_summary_df is None:
             return
@@ -571,7 +570,7 @@ class Scheduler(param.Parameterized):
         self.summary_widget = summary_widget
         self._debugging_message = "Finished making summary widget."
 
-    def update_summary_widget_data(self):
+    def _update_summary_widget_data(self):
         """Update data for survey Tabulator widget."""
         self._debugging_message = "Starting to update summary widget."
         columns = [
@@ -586,7 +585,7 @@ class Scheduler(param.Parameterized):
         self._debugging_message = "Finished updating summary widget."
 
     @param.depends('_publish_summary_widget')
-    def publish_summary_widget(self):
+    def _publish_summary_widget(self):
         """Publish the summary Tabulator widget to be displayed on the dashboard.
 
         Returns
@@ -596,11 +595,10 @@ class Scheduler(param.Parameterized):
         """
         if self.summary_widget is None:
             return 'No summary available.'
-        else:
-            self._debugging_message = "Publishing summary widget."
-            return self.summary_widget
+        self._debugging_message = "Publishing summary widget."
+        return self.summary_widget
 
-    def compute_survey_maps(self):
+    def _compute_survey_maps(self):
         """Compute survey maps and update drop-down selection."""
         if self._scheduler is None:
             self._debugging_message = 'Cannot compute survey maps as no scheduler loaded.'
@@ -622,7 +620,7 @@ class Scheduler(param.Parameterized):
             self._debugging_message = f'Cannot compute survey maps: \n{traceback.format_exc(limit=-1)}'
             pn.state.notifications.error('Cannot compute survey maps!', duration=0)
 
-    def make_reward_df(self):
+    def _make_reward_df(self):
         """Make the summary dataframe."""
         if self._scheduler is None:
             self._debugging_message = 'Cannot make summary dataframe as no scheduler loaded.'
@@ -658,7 +656,7 @@ class Scheduler(param.Parameterized):
             self._debugging_message = f'Cannot make survey reward dataframe: \n{tb}'
             pn.state.notifications.error('Cannot make survey reward dataframe!', duration=0)
 
-    def create_reward_widget(self):
+    def _create_reward_widget(self):
         """Create Tabulator widget with survey reward dataframe."""
         if self._survey_reward_df is None:
             return
@@ -706,7 +704,7 @@ class Scheduler(param.Parameterized):
         self.reward_widget = reward_widget
         self._debugging_message = "Finished making reward widget."
 
-    def update_reward_widget_data(self):
+    def _update_reward_widget_data(self):
         """Update Treward abulator widget data."""
         if self._survey_reward_df is None:
             return
@@ -729,7 +727,7 @@ class Scheduler(param.Parameterized):
         self._debugging_message = "Finished updating reward widget data."
 
     @param.depends('_publish_reward_widget')
-    def publish_reward_widget(self):
+    def _publish_reward_widget(self):
         """Return the reward Tabulator widget for display.
 
         Returns
@@ -739,11 +737,10 @@ class Scheduler(param.Parameterized):
         """
         if self._survey_reward_df is None:
             return 'No rewards available.'
-        else:
-            self._debugging_message = "Publishing reward widget."
-            return self.reward_widget
+        self._debugging_message = "Publishing reward widget."
+        return self.reward_widget
 
-    def create_sky_map_base(self):
+    def _create_sky_map_base(self):
         """Create a base plot with a dummy map."""
         if self._survey_maps is None:
             self._debugging_message = 'Cannot create sky map as no survey maps made.'
@@ -774,7 +771,7 @@ class Scheduler(param.Parameterized):
             self._debugging_message = f'Cannot create sky map base: \n{traceback.format_exc(limit=-1)}'
             pn.state.notifications.error('Cannot create sky map base!', duration=0)
 
-    def update_sky_map_with_survey_map(self):
+    def _update_sky_map_with_survey_map(self):
         """Update base plot with healpixel data from selected survey map.
 
         Notes
@@ -857,7 +854,7 @@ class Scheduler(param.Parameterized):
             self._debugging_message = f'Cannot update sky map: \n{traceback.format_exc(limit=-1)}'
             pn.state.notifications.error('Cannot update sky map!', duration=0)
 
-    def update_sky_map_with_reward(self):
+    def _update_sky_map_with_reward(self):
         """Update base plot with healpixel data from selected survey map.
 
         Notes
@@ -942,7 +939,7 @@ class Scheduler(param.Parameterized):
             pn.state.notifications.error('Cannot update sky map!', duration=0)
 
     @param.depends('_publish_map')
-    def publish_sky_map(self):
+    def _publish_sky_map(self):
         """Return the Bokeh plot for display.
 
         Returns
@@ -953,15 +950,14 @@ class Scheduler(param.Parameterized):
         if self._conditions is None:
             return 'No scheduler loaded.'
 
-        elif self._survey_maps is None:
+        if self._survey_maps is None:
             return 'No surveys are loaded.'
 
-        elif self._sky_map_base is None:
+        if self._sky_map_base is None:
             return 'No map loaded.'
 
-        else:
-            self._debugging_message = "Publishing sky map."
-            return self._sky_map_base.figure
+        self._debugging_message = "Publishing sky map."
+        return self._sky_map_base.figure
 
     @param.depends('_debugging_message')
     def _debugging_messages(self):
@@ -991,7 +987,7 @@ class Scheduler(param.Parameterized):
         return self.debug_pane
 
     @param.depends('_show_loading_indicator', watch=True)
-    def update_loading_indicator(self):
+    def _update_loading_indicator(self):
         """Update the app to show or stop showing the loading indicator."""
         sched_app.loading = self._show_loading_indicator
 
@@ -1012,10 +1008,9 @@ class Scheduler(param.Parameterized):
         survey = self._survey_name.split(':')[0]
         if not self._display_reward and self.survey_map in maps:
             return f'\nTier {self._tier[-1]} - Survey {survey} - Map {self._map_name}'
-        elif not self._display_reward and self.survey_map not in maps:
+        if not self._display_reward and self.survey_map not in maps:
             return f'\nTier {self._tier[-1]} - Survey {survey} - Reward {self._map_name}'
-        else:
-            return f'\nTier {self._tier[-1]} - Survey {survey} - Reward {self._reward_name}'
+        return f'\nTier {self._tier[-1]} - Survey {survey} - Reward {self._reward_name}'
 
     def generate_summary_table_heading(self):
         """Select the summary table heading based on whether data is being
@@ -1028,8 +1023,7 @@ class Scheduler(param.Parameterized):
         """
         if not self._display_dashboard_data:
             return 'Scheduler summary'
-        else:
-            return f'Scheduler summary for tier {self._tier[-1]}'
+        return f'Scheduler summary for tier {self._tier[-1]}'
 
     def generate_reward_table_heading(self):
         """Select the reward table heading based on whether data is
@@ -1042,8 +1036,7 @@ class Scheduler(param.Parameterized):
         """
         if not self._display_dashboard_data:
             return 'Rewards'
-        else:
-            return f'Rewards for survey {self._survey_name}'
+        return f'Rewards for survey {self._survey_name}'
 
     def generate_map_heading(self):
         """Select the map heading based on whether a survey or reward map
@@ -1060,10 +1053,9 @@ class Scheduler(param.Parameterized):
         maps = ['u_sky', 'g_sky', 'r_sky', 'i_sky', 'z_sky', 'y_sky', 'reward']
         if not self._display_reward and self.survey_map in maps:
             return f'Survey {self._survey_name}\nMap: {self._map_name}'
-        elif not self._display_reward and self.survey_map not in maps:
+        if not self._display_reward and self.survey_map not in maps:
             return f'Survey {self._survey_name}\nReward: {self._map_name}'
-        else:
-            return f'Survey {self._survey_name}\nReward {self._reward_name}'
+        return f'Survey {self._survey_name}\nReward {self._reward_name}'
 
     @param.depends('_update_headings')
     def dashboard_subtitle(self):
@@ -1205,34 +1197,34 @@ def generate_key():
     data_array = generate_array_for_key()
 
     # Assign data to relevant data source (to be used in glyph creation below).
-    title_source = bokeh.models.ColumnDataSource(dict(
-        x=data_array['x_title'],
-        y=data_array['y_title'],
-        text=data_array['title_text'],
-        ))
-    text1_source = bokeh.models.ColumnDataSource(dict(
-        x=data_array['x_text_1'],
-        y=data_array['y'],
-        text=data_array['text_1'],
-        ))
-    text2_source = bokeh.models.ColumnDataSource(dict(
-        x=data_array['x_text_2'],
-        y=data_array['y'],
-        text=data_array['text_2'],
-        ))
-    circle_source = bokeh.models.ColumnDataSource(dict(
-        x=data_array['x_circles'],
-        y=data_array['y'],
-        sizes=data_array['circle_sizes'],
-        colours=data_array['circle_colours'],
-        ))
-    line_source = bokeh.models.ColumnDataSource(dict(
-        x0=data_array['x0_lines'],
-        y0=data_array['y'],
-        x1=data_array['x1_lines'],
-        y1=data_array['y'],
-        colours=data_array['line_colours'],
-        ))
+    title_source = bokeh.models.ColumnDataSource({
+        'x': data_array['x_title'],
+        'y': data_array['y_title'],
+        'text': data_array['title_text'],
+        })
+    text1_source = bokeh.models.ColumnDataSource({
+        'x': data_array['x_text_1'],
+        'y': data_array['y'],
+        'text': data_array['text_1'],
+        })
+    text2_source = bokeh.models.ColumnDataSource({
+        'x': data_array['x_text_2'],
+        'y': data_array['y'],
+        'text': data_array['text_2'],
+        })
+    circle_source = bokeh.models.ColumnDataSource({
+        'x': data_array['x_circles'],
+        'y': data_array['y'],
+        'sizes': data_array['circle_sizes'],
+        'colours': data_array['circle_colours'],
+        })
+    line_source = bokeh.models.ColumnDataSource({
+        'x0': data_array['x0_lines'],
+        'y0': data_array['y'],
+        'x1': data_array['x1_lines'],
+        'y1': data_array['y'],
+        'colours': data_array['line_colours'],
+        })
 
     # Create glyphs.
     border_glyph = bokeh.models.Rect(
