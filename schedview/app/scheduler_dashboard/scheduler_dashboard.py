@@ -993,7 +993,7 @@ class Scheduler(param.Parameterized):
 
     # -------------------------------------------------------------------------------------- Dashboard titles
 
-    def generate_dashboard_subtitle(self):
+    def _generate_dashboard_subtitle(self):
         """Select the dashboard subtitle string based on whether whether a
         survey map or reward map is being displayed.
 
@@ -1012,7 +1012,7 @@ class Scheduler(param.Parameterized):
             return f'\nTier {self._tier[-1]} - Survey {survey} - Reward {self._map_name}'
         return f'\nTier {self._tier[-1]} - Survey {survey} - Reward {self._reward_name}'
 
-    def generate_summary_table_heading(self):
+    def _generate_summary_table_heading(self):
         """Select the summary table heading based on whether data is being
         displayed or not.
 
@@ -1025,7 +1025,7 @@ class Scheduler(param.Parameterized):
             return 'Scheduler summary'
         return f'Scheduler summary for tier {self._tier[-1]}'
 
-    def generate_reward_table_heading(self):
+    def _generate_reward_table_heading(self):
         """Select the reward table heading based on whether data is
         being displayed or not.
 
@@ -1038,7 +1038,7 @@ class Scheduler(param.Parameterized):
             return 'Rewards'
         return f'Rewards for survey {self._survey_name}'
 
-    def generate_map_heading(self):
+    def _generate_map_heading(self):
         """Select the map heading based on whether a survey or reward map
         is being displayed.
 
@@ -1058,7 +1058,7 @@ class Scheduler(param.Parameterized):
         return f'Survey {self._survey_name}\nReward {self._reward_name}'
 
     @param.depends('_update_headings')
-    def dashboard_subtitle(self):
+    def _dashboard_subtitle(self):
         """Load subtitle data and create/update a String pane to display subtitle.
 
         Returns
@@ -1081,7 +1081,7 @@ class Scheduler(param.Parameterized):
         return self.dashboard_subtitle_pane
 
     @param.depends('_update_headings')
-    def summary_table_heading(self):
+    def _summary_table_heading(self):
         """Load heading data and create/update a String pane to display heading.
 
         Returns
@@ -1103,7 +1103,7 @@ class Scheduler(param.Parameterized):
         return self.summary_table_heading_pane
 
     @param.depends('_update_headings')
-    def reward_table_heading(self):
+    def _reward_table_heading(self):
         """Load title data and create/update a String pane to display heading.
 
         Returns
@@ -1126,7 +1126,7 @@ class Scheduler(param.Parameterized):
         return self.reward_table_heading_pane
 
     @param.depends('_update_headings')
-    def map_title(self):
+    def _map_title(self):
         """Load title data and create/update a String pane to display heading.
 
         Returns
