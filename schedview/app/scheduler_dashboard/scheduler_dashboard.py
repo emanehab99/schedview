@@ -28,6 +28,7 @@ import logging
 import numpy as np
 import os
 import panel as pn
+from panel.io.loading import start_loading_spinner, stop_loading_spinner
 import param
 import traceback
 
@@ -71,6 +72,7 @@ stylesheet = """
 --mono-font: Helvetica;
 }
 """
+
 
 
 def url_formatter(dataframe_row, name_column, url_column):
@@ -140,6 +142,9 @@ class Scheduler(param.Parameterized):
     reward_widget = param.Parameter(
         default=None,
         doc='')
+    show_loading_indicator = param.Boolean(
+        default=False
+        )
 
     # Param parameters (used in depends decoraters and trigger calls).
     _publish_summary_widget = param.Parameter(None)
@@ -174,7 +179,6 @@ class Scheduler(param.Parameterized):
     _display_reward = False
     _display_dashboard_data = False
     _do_not_trigger_update = True
-    _show_loading_indicator = False
     _model_observatory = ModelObservatory(init_load_length=1)
 
     # ------------------------------------------------------------------------------------------ User actions
@@ -182,17 +186,17 @@ class Scheduler(param.Parameterized):
     @param.depends('scheduler_fname', watch=True)
     def _update_scheduler_fname(self):
         """Update the dashboard when a user enters a new filepath/URL."""
-        self._show_loading_indicator = True
+        self.show_loading_indicator = True
         self.clear_dashboard()
 
         if not self.read_scheduler():
             self.clear_dashboard()
-            self._show_loading_indicator = False
+            self.show_loading_indicator = False
             return
 
         if not self.make_scheduler_summary_df():
             self.clear_dashboard()
-            self._show_loading_indicator = False
+            self.show_loading_indicator = False
             return
 
         self.create_summary_widget()
@@ -218,12 +222,12 @@ class Scheduler(param.Parameterized):
         self._display_reward = False
         self.param.trigger('_update_headings')
 
-        self._show_loading_indicator = False
+        self.show_loading_indicator = False
 
     @param.depends('date', watch=True)
     def _update_date(self):
         """Update the dashboard when a user chooses a new date/time."""
-        self._show_loading_indicator = True
+        self.show_loading_indicator = True
         self.clear_dashboard()
 
         self._date_time = Time(Timestamp(
@@ -233,7 +237,7 @@ class Scheduler(param.Parameterized):
 
         if not self.make_scheduler_summary_df():
             self.clear_dashboard()
-            self._show_loading_indicator = False
+            self.show_loading_indicator = False
             return
 
         if self.summary_widget is None:
@@ -262,7 +266,7 @@ class Scheduler(param.Parameterized):
         self._display_reward = False
         self.param.trigger('_update_headings')
 
-        self._show_loading_indicator = False
+        self.show_loading_indicator = False
 
     @param.depends('USER_tier', watch=True)
     def _update_tier(self):
@@ -990,11 +994,6 @@ class Scheduler(param.Parameterized):
             self.debug_pane.object = self._debug_string
         return self.debug_pane
 
-    @param.depends('_show_loading_indicator', watch=True)
-    def update_loading_indicator(self):
-        """Update the app to show or stop showing the loading indicator."""
-        sched_app.loading = self._show_loading_indicator
-
     # -------------------------------------------------------------------------------------- Dashboard titles
 
     def generate_dashboard_subtitle(self):
@@ -1318,14 +1317,6 @@ def generate_key():
 
 # ------------------------------------------------------------------------------------------ Create dashboard
 
-
-# Initialize the dashboard layout.
-sched_app = pn.GridSpec(
-    sizing_mode='stretch_both',
-    max_height=1000,
-    ).servable()
-
-
 def scheduler_app(date=None, scheduler_pickle=None):
     """Create a dashboard with grids of Param parameters, Tabulator widgets,
     and Bokeh plots.
@@ -1342,6 +1333,12 @@ def scheduler_app(date=None, scheduler_pickle=None):
     sched_app : 'panel.layout.grid.GridSpec'
         The dashboard.
     """
+    # Initialize the dashboard layout.
+    sched_app = pn.GridSpec(
+        sizing_mode='stretch_both',
+        max_height=1000,
+        ).servable()
+
     scheduler = Scheduler()
 
     if date is not None:
@@ -1349,6 +1346,11 @@ def scheduler_app(date=None, scheduler_pickle=None):
 
     if scheduler_pickle is not None:
         scheduler.scheduler_fname = scheduler_pickle
+
+    # show dashboard as busy when scheduler.show_loading_spinner is True
+    @pn.depends(loading=scheduler.param.show_loading_indicator, watch=True)
+    def update_loading(loading):
+        start_loading_spinner(sched_app) if loading else stop_loading_spinner(sched_app)
 
     # Dashboard title.
     sched_app[0:8, :] = pn.Row(
@@ -1431,8 +1433,13 @@ def scheduler_app(date=None, scheduler_pickle=None):
         sizing_mode='stretch_width',
         collapsed=True,
         )
+    
+    pn.state.location.sync(scheduler,
+                           {'scheduler_fname': 'scheduler', 'nside': 'nside'})
 
     return sched_app
+
+# /home/eman/Downloads/sched_maps/example_pickle_scheduler.p.xz
 
 
 if __name__ == '__main__':
